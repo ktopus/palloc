@@ -177,21 +177,28 @@ struct gc_root {
 };
 SLIST_HEAD(gc_list, gc_root);
 
-struct palloc_cut_point {
-	struct chunk *chunk;
-	uint32_t chunk_free;
-	size_t	allocated;
-	SLIST_ENTRY(palloc_cut_point) link;
-};
+struct palloc_cut_point;
 SLIST_HEAD(cut_list, palloc_cut_point);
 
+TAILQ_HEAD(child_list, palloc_pool);
 struct palloc_pool {
 	struct palloc_config cfg;
 	struct chunk_list_head chunks;
-	SLIST_ENTRY(palloc_pool) link;
 	size_t allocated;
 	struct gc_list gc_list;
 	struct cut_list cut_list;
+	struct child_list childs;
+	struct palloc_pool *parent;
+	TAILQ_ENTRY(palloc_pool) child_link;
+	SLIST_ENTRY(palloc_pool) link;
+};
+
+struct palloc_cut_point {
+	struct chunk *chunk;
+	uint32_t chunk_free;
+	size_t allocated;
+	struct palloc_pool fake_pool;
+	SLIST_ENTRY(palloc_cut_point) link;
 };
 
 static __thread SLIST_HEAD(palloc_pool_head, palloc_pool) pools;
@@ -295,6 +302,40 @@ chunk_alloc(struct chunk *chunk, size_t size)
 	return ptr;
 }
 
+static void
+pool_inc_allocated(struct palloc_pool *pool, size_t size)
+{
+	pool->allocated += size;
+	if (pool->parent == NULL)
+		return;
+
+	pool_inc_allocated(pool->parent, size);
+}
+
+static void
+pool_dec_allocated(struct palloc_pool *pool, size_t size)
+{
+	assert(pool->allocated >= size);
+	pool->allocated -= size;
+	if (pool->parent == NULL)
+		return;
+
+	pool_dec_allocated(pool->parent, size);
+}
+
+static bool
+pool_check_allocated(struct palloc_pool *pool, size_t size)
+{
+	if (pool->cfg.size != 0 && (
+	     pool->allocated > SIZE_MAX - size ||
+	     pool->allocated + size > pool->cfg.size))
+		return false;
+
+	if (pool->parent == NULL)
+		return true;
+
+	return pool_check_allocated(pool->parent, size);
+}
 
 static struct chunk *
 next_chunk_for(struct palloc_pool *pool, size_t size)
@@ -323,8 +364,7 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	} else
 		chunk_size = class->size;
 
-	if (pool->cfg.size != 0 &&
-	    pool->allocated + chunk_size > pool->cfg.size)
+	if (pool_check_allocated(pool, chunk_size) == false)
 		return NULL;
 
 	if (chunk != NULL) {
@@ -350,7 +390,7 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 found:
 	assert(chunk != NULL && chunk->magic == chunk_magic);
 	TAILQ_INSERT_HEAD(&pool->chunks, chunk, link);
-	pool->allocated += chunk->data_size;
+	pool_inc_allocated(pool, chunk->data_size);
 	VALGRIND_CREATE_MEMPOOL(chunk, PALLOC_REDZONE, 0); /* NOACCESS mark is set by chunk_poison() */
 
 	return chunk;
@@ -500,13 +540,31 @@ release_chunks(struct chunk_list_head *chunks)
 	}
 }
 
+static void
+prelease_childs(struct palloc_pool *pool, struct palloc_pool *child_to)
+{
+	struct palloc_pool *child, *tmp;
+
+	TAILQ_FOREACH_REVERSE_SAFE(child, &pool->childs, child_list, child_link, tmp) {
+		TAILQ_REMOVE(&pool->childs, child, child_link);
+		prelease(child);
+
+		if (child == child_to)
+			break;
+	}
+}
+
 void
 prelease(struct palloc_pool *pool)
 {
+	prelease_childs(pool, NULL);
+
 	release_chunks(&pool->chunks);
 	TAILQ_INIT(&pool->chunks);
 	SLIST_INIT(&pool->cut_list);
-	pool->allocated = 0;
+	TAILQ_INIT(&pool->childs);
+	if (pool->allocated != 0)
+		pool_dec_allocated(pool, pool->allocated);
 }
 
 void
@@ -516,6 +574,18 @@ prelease_after(struct palloc_pool *pool, size_t after)
 		prelease(pool);
 }
 
+static void
+palloc_init_pool(struct palloc_pool *pool, struct palloc_config cfg)
+{
+	pool->cfg = cfg;
+	pool->allocated = 0;
+	TAILQ_INIT(&pool->chunks);
+	SLIST_INIT(&pool->gc_list);
+	SLIST_INIT(&pool->cut_list);
+	TAILQ_INIT(&pool->childs);
+	pool->parent = NULL;
+}
+
 struct palloc_pool *
 palloc_create_pool(struct palloc_config cfg)
 {
@@ -523,22 +593,37 @@ palloc_create_pool(struct palloc_config cfg)
 
 	palloc_init();
 
-	pool = malloc(sizeof(struct palloc_pool));
-	assert(pool != NULL);
-	pool->cfg = cfg;
-	pool->allocated = 0;
-	TAILQ_INIT(&pool->chunks);
-	SLIST_INIT(&pool->gc_list);
-	SLIST_INIT(&pool->cut_list);
+	pool = malloc(sizeof(*pool));
+	palloc_init_pool(pool, cfg);
 	SLIST_INSERT_HEAD(&pools, pool, link);
+
 	return pool;
+}
+
+struct palloc_pool *
+palloc_create_child_pool(struct palloc_pool *pool, struct palloc_config cfg)
+{
+	struct palloc_pool *child;
+
+	child = palloc(pool, sizeof(*child));
+	palloc_init_pool(child, cfg);
+	child->parent = pool;
+	TAILQ_INSERT_TAIL(&pool->childs, child, child_link);
+
+	return child;
 }
 
 void
 palloc_destroy_pool(struct palloc_pool *pool)
 {
-	SLIST_REMOVE(&pools, pool, palloc_pool, link);
 	prelease(pool);
+
+	if (pool->parent != NULL) {
+		TAILQ_REMOVE(&pool->parent->childs, pool, child_link);
+		return;
+	}
+
+	SLIST_REMOVE(&pools, pool, palloc_pool, link);
 	free(pool);
 }
 
@@ -579,13 +664,28 @@ palloc_unregister_gc_root(struct palloc_pool *pool, void *ptr)
 		}
 }
 
+static void
+palloc_gc_childs(struct palloc_pool *pool)
+{
+	struct palloc_pool *child, *tmp;
+
+	TAILQ_FOREACH_REVERSE_SAFE(child, &pool->childs, child_list, child_link, tmp) {
+		TAILQ_REMOVE(&pool->childs, child, child_link);
+		palloc_gc(child);
+	}
+}
+
 void
 palloc_gc(struct palloc_pool *pool)
 {
 	struct chunk_list_head old_chunks = pool->chunks;
 
+	palloc_gc_childs(pool);
+
 	TAILQ_INIT(&pool->chunks);
-	pool->allocated = 0;
+	SLIST_INIT(&pool->cut_list);
+	if (pool->allocated != 0)
+		pool_dec_allocated(pool, pool->allocated);
 
 	struct gc_list new_list = SLIST_HEAD_INITIALIZER(list);
 	struct gc_root *old, *new;
@@ -617,6 +717,8 @@ palloc_register_cut_point(struct palloc_pool *pool)
 	cut_point->chunk = chunk;
 	cut_point->chunk_free = chunk_free;
 	cut_point->allocated = allocated;
+	palloc_init_pool(&cut_point->fake_pool, (struct palloc_config){0});
+	TAILQ_INSERT_TAIL(&pool->childs, &cut_point->fake_pool, child_link);
 	SLIST_INSERT_HEAD(&pool->cut_list, cut_point, link);
 
 	return cut_point;
@@ -627,6 +729,7 @@ palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point)
 {
 	struct chunk *chunk, *next_chunk;
 	struct palloc_cut_point *cp;
+	size_t cut_allocated;
 
 	if (cut_point == NULL)
 		cut_point = SLIST_FIRST(&pool->cut_list);
@@ -646,6 +749,8 @@ palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point)
 		return prelease(pool);
 	}
 
+	prelease_childs(pool, &cut_point->fake_pool);
+
 	TAILQ_FOREACH_SAFE(chunk, &pool->chunks, link, next_chunk) {
 		if (chunk == cut_point->chunk)
 			break;
@@ -659,7 +764,10 @@ palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point)
 	assert(cut_point->chunk_free >= chunk->free);
 	chunk->brk -= cut_point->chunk_free - chunk->free;
 	chunk->free = cut_point->chunk_free;
-	pool->allocated = cut_point->allocated;
+	assert(pool->allocated >= cut_point->allocated);
+	cut_allocated = pool->allocated - cut_point->allocated;
+	if (cut_allocated != 0)
+		pool_dec_allocated(pool, cut_allocated);
 
 	chunk_poison(chunk);
 	VALGRIND_MEMPOOL_TRIM(chunk, (void *)chunk + sizeof(*chunk), chunk->data_size - chunk->free);
