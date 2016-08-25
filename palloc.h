@@ -34,7 +34,7 @@
 
 struct palloc_pool;
 struct palloc_cut_point;
-typedef void (* palloc_nomem_cb_t)(struct palloc_pool *, void *);
+typedef void (* palloc_nomem_cb_t)(struct palloc_pool *, void *, size_t);
 struct palloc_config {
 	const char *name;
 	const void *ctx;

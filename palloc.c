@@ -44,6 +44,7 @@
 #endif
 
 #include <assert.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
@@ -364,8 +365,10 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	} else
 		chunk_size = class->size;
 
-	if (pool_check_allocated(pool, chunk_size) == false)
-		return NULL;
+	if (pool_check_allocated(pool, chunk_size) == false) {
+		errno = ENOSPC;
+		goto failed;
+	}
 
 	if (chunk != NULL) {
 		TAILQ_REMOVE(&class->chunks, chunk, link);
@@ -375,7 +378,7 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	chunk = mmap(MMAP_HINT_ADDR, sizeof(struct chunk) + chunk_size,
 		     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
 	if (chunk == MAP_FAILED)
-		return NULL;
+		goto failed;
 
 	class->chunks_count++;
 	chunk->magic = chunk_magic;
@@ -394,6 +397,12 @@ found:
 	VALGRIND_CREATE_MEMPOOL(chunk, PALLOC_REDZONE, 0); /* NOACCESS mark is set by chunk_poison() */
 
 	return chunk;
+failed:
+	if (pool->cfg.nomem_cb != NULL)
+		pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx, chunk_size);
+	abort();
+
+	return NULL;
 }
 
 void * __regparam
@@ -402,11 +411,6 @@ palloc_slow_path(struct palloc_pool *pool, size_t size)
 	struct chunk *chunk;
 
 	chunk = next_chunk_for(pool, size + RZMAX);
-	if (chunk == NULL) {
-		if (pool->cfg.nomem_cb != NULL)
-			pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx);
-		abort();
-	}
 
 	return chunk_alloc(chunk, size);
 }
