@@ -324,16 +324,21 @@ pool_dec_allocated(struct palloc_pool *pool, size_t size)
 	pool_dec_allocated(pool->parent, size);
 }
 
-static bool
+static void
 pool_check_allocated(struct palloc_pool *pool, size_t size)
 {
 	if (pool->cfg.size != 0 && (
 	     pool->allocated > SIZE_MAX - size ||
-	     pool->allocated + size > pool->cfg.size))
-		return false;
+	     pool->allocated + size > pool->cfg.size)) {
+		errno = ENOSPC;
+
+		if (pool->cfg.nomem_cb != NULL)
+			pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx, size);
+		abort();
+	}
 
 	if (pool->parent == NULL)
-		return true;
+		return;
 
 	return pool_check_allocated(pool->parent, size);
 }
@@ -365,10 +370,7 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	} else
 		chunk_size = class->size;
 
-	if (pool_check_allocated(pool, chunk_size) == false) {
-		errno = ENOSPC;
-		goto failed;
-	}
+	pool_check_allocated(pool, chunk_size);
 
 	if (chunk != NULL) {
 		TAILQ_REMOVE(&class->chunks, chunk, link);
