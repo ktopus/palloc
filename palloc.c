@@ -181,6 +181,9 @@ SLIST_HEAD(gc_list, gc_root);
 struct palloc_cut_point;
 SLIST_HEAD(cut_list, palloc_cut_point);
 
+struct palloc_pool;
+SLIST_HEAD(free_child_list, palloc_pool);
+
 TAILQ_HEAD(child_list, palloc_pool);
 struct palloc_pool {
 	struct palloc_config cfg;
@@ -189,9 +192,11 @@ struct palloc_pool {
 	struct gc_list gc_list;
 	struct cut_list cut_list;
 	struct child_list childs;
+	struct free_child_list free_childs;
 	struct palloc_pool *parent;
 	TAILQ_ENTRY(palloc_pool) child_link;
 	SLIST_ENTRY(palloc_pool) link;
+	SLIST_ENTRY(palloc_pool) free_child_link;
 };
 
 struct palloc_cut_point {
@@ -552,6 +557,9 @@ prelease_childs(struct palloc_pool *pool, struct palloc_pool *child_to)
 	struct palloc_pool *child, *tmp;
 
 	TAILQ_FOREACH_REVERSE_SAFE(child, &pool->childs, child_list, child_link, tmp) {
+		if (child->free_child_link.sle_next != NULL)
+			SLIST_REMOVE(&pool->free_childs, child, palloc_pool, free_child_link);
+
 		TAILQ_REMOVE(&pool->childs, child, child_link);
 		prelease(child);
 
@@ -569,6 +577,7 @@ prelease(struct palloc_pool *pool)
 	TAILQ_INIT(&pool->chunks);
 	SLIST_INIT(&pool->cut_list);
 	TAILQ_INIT(&pool->childs);
+	SLIST_INIT(&pool->free_childs);
 	if (pool->allocated != 0)
 		pool_dec_allocated(pool, pool->allocated);
 }
@@ -589,6 +598,8 @@ palloc_init_pool(struct palloc_pool *pool, struct palloc_config cfg)
 	SLIST_INIT(&pool->gc_list);
 	SLIST_INIT(&pool->cut_list);
 	TAILQ_INIT(&pool->childs);
+	SLIST_INIT(&pool->free_childs);
+	pool->free_child_link.sle_next = NULL;
 	pool->parent = NULL;
 }
 
@@ -611,6 +622,17 @@ palloc_create_child_pool(struct palloc_pool *pool, struct palloc_config cfg)
 {
 	struct palloc_pool *child;
 
+	if (cfg.reuse == true) {
+		child = SLIST_FIRST(&pool->free_childs);
+
+		if (child != NULL) {
+			SLIST_REMOVE_HEAD(&pool->free_childs, free_child_link);
+			child->free_child_link.sle_next = NULL;
+
+			return child;
+		}
+	}
+
 	child = palloc(pool, sizeof(*child));
 	palloc_init_pool(child, cfg);
 	child->parent = pool;
@@ -622,12 +644,24 @@ palloc_create_child_pool(struct palloc_pool *pool, struct palloc_config cfg)
 void
 palloc_destroy_pool(struct palloc_pool *pool)
 {
-	prelease(pool);
+	struct palloc_pool *parent = pool->parent;
 
-	if (pool->parent != NULL) {
-		TAILQ_REMOVE(&pool->parent->childs, pool, child_link);
+	if (parent != NULL) {
+		// Don't allow destroy reusable pool several times
+		assert(pool->free_child_link.sle_next == NULL);
+
+		if (pool->cfg.reuse == true) {
+			prelease_after(pool, pool->cfg.release_after);
+			SLIST_INSERT_HEAD(&parent->free_childs, pool, free_child_link);
+		} else {
+			TAILQ_REMOVE(&parent->childs, pool, child_link);
+			prelease(pool);
+		}
+
 		return;
 	}
+
+	prelease(pool);
 
 	SLIST_REMOVE(&pools, pool, palloc_pool, link);
 	free(pool);
@@ -653,6 +687,8 @@ void
 palloc_register_gc_root(struct palloc_pool *pool,
 			void *ptr, void (*copy)(struct palloc_pool *, void *))
 {
+	assert(pool->parent == NULL); // Register gc_root inside child pool is forbidden
+
 	struct gc_root *root = palloc(pool, sizeof(*root));
 	root->ptr = ptr;
 	root->copy = copy;
@@ -670,26 +706,16 @@ palloc_unregister_gc_root(struct palloc_pool *pool, void *ptr)
 		}
 }
 
-static void
-palloc_gc_childs(struct palloc_pool *pool)
-{
-	struct palloc_pool *child, *tmp;
-
-	TAILQ_FOREACH_REVERSE_SAFE(child, &pool->childs, child_list, child_link, tmp) {
-		TAILQ_REMOVE(&pool->childs, child, child_link);
-		palloc_gc(child);
-	}
-}
-
 void
 palloc_gc(struct palloc_pool *pool)
 {
 	struct chunk_list_head old_chunks = pool->chunks;
 
-	palloc_gc_childs(pool);
+	prelease_childs(pool, NULL);
 
 	TAILQ_INIT(&pool->chunks);
 	SLIST_INIT(&pool->cut_list);
+	SLIST_INIT(&pool->free_childs);
 	if (pool->allocated != 0)
 		pool_dec_allocated(pool, pool->allocated);
 
