@@ -62,6 +62,7 @@ void *palloc_ctx(struct palloc_pool *, const void *);
 palloc_nomem_cb_t palloc_nomem_cb(struct palloc_pool *, palloc_nomem_cb_t);
 size_t palloc_size(struct palloc_pool *, size_t *size);
 size_t palloc_allocated(struct palloc_pool *);
+bool palloc_child(struct palloc_pool *parent_pool, struct palloc_pool *pool);
 
 void palloc_register_gc_root(struct palloc_pool *pool,
 			     void *ptr, void (*copy)(struct palloc_pool *, void *));

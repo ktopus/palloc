@@ -437,6 +437,19 @@ palloc(struct palloc_pool *pool, size_t size)
 	return palloc_slow_path(pool, size);
 }
 
+bool
+palloc_child(struct palloc_pool *parent_pool, struct palloc_pool *pool)
+{
+	while (pool->parent != NULL) {
+		if (pool->parent == parent_pool)
+			return true;
+
+		pool = pool->parent;
+	}
+
+	return false;
+}
+
 void *
 prealloc_slow_path(struct palloc_pool *pool, void *oldptr, size_t oldsize, size_t size)
 {
