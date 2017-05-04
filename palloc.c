@@ -641,6 +641,7 @@ palloc_create_child_pool(struct palloc_pool *pool, struct palloc_config cfg)
 		if (child != NULL) {
 			SLIST_REMOVE_HEAD(&pool->free_childs, free_child_link);
 			child->free_child_link.sle_next = NULL;
+			child->cfg = cfg;
 
 			return child;
 		}
