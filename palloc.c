@@ -584,6 +584,15 @@ prelease_childs(struct palloc_pool *pool, struct palloc_pool *child_to)
 void
 prelease(struct palloc_pool *pool)
 {
+	return prelease_after(pool, pool->cfg.release_after);
+}
+
+void
+prelease_after(struct palloc_pool *pool, size_t after)
+{
+	if (pool->allocated <= after)
+		return;
+
 	prelease_childs(pool, NULL);
 
 	release_chunks(&pool->chunks);
@@ -593,13 +602,7 @@ prelease(struct palloc_pool *pool)
 	SLIST_INIT(&pool->free_childs);
 	if (pool->allocated != 0)
 		pool_dec_allocated(pool, pool->allocated);
-}
 
-void
-prelease_after(struct palloc_pool *pool, size_t after)
-{
-	if (pool->allocated > after)
-		prelease(pool);
 }
 
 static void

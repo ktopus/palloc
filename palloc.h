@@ -44,7 +44,7 @@ struct palloc_config {
 	palloc_nomem_cb_t nomem_cb;
 
 	bool reuse;
-	size_t release_after; // used only if `reuse == true'
+	size_t release_after;
 };
 
 void *palloc(struct palloc_pool *pool, size_t size);
