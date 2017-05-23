@@ -330,6 +330,17 @@ pool_dec_allocated(struct palloc_pool *pool, size_t size)
 }
 
 static void
+pool_call_nomem_cb(struct palloc_pool *pool, size_t size)
+{
+	if (pool->cfg.nomem_cb != NULL)
+		pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx, size);
+	else if (pool->parent != NULL)
+		return pool_call_nomem_cb(pool->parent, size);
+
+	abort();
+}
+
+static void
 pool_check_allocated(struct palloc_pool *pool, size_t size)
 {
 	if (pool->cfg.size != 0 && (
@@ -337,9 +348,7 @@ pool_check_allocated(struct palloc_pool *pool, size_t size)
 	     pool->allocated + size > pool->cfg.size)) {
 		errno = ENOSPC;
 
-		if (pool->cfg.nomem_cb != NULL)
-			pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx, size);
-		abort();
+		return pool_call_nomem_cb(pool, size);
 	}
 
 	if (pool->parent == NULL)
@@ -384,8 +393,10 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 
 	chunk = mmap(MMAP_HINT_ADDR, sizeof(struct chunk) + chunk_size,
 		     PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-	if (chunk == MAP_FAILED)
-		goto failed;
+	if (chunk == MAP_FAILED) {
+		pool_call_nomem_cb(pool, chunk_size);
+		return NULL;
+	}
 
 	class->chunks_count++;
 	chunk->magic = chunk_magic;
@@ -404,12 +415,6 @@ found:
 	VALGRIND_CREATE_MEMPOOL(chunk, PALLOC_REDZONE, 0); /* NOACCESS mark is set by chunk_poison() */
 
 	return chunk;
-failed:
-	if (pool->cfg.nomem_cb != NULL)
-		pool->cfg.nomem_cb(pool, (void *)pool->cfg.ctx, chunk_size);
-	abort();
-
-	return NULL;
 }
 
 void * __regparam
@@ -602,7 +607,6 @@ prelease_after(struct palloc_pool *pool, size_t after)
 	SLIST_INIT(&pool->free_childs);
 	if (pool->allocated != 0)
 		pool_dec_allocated(pool, pool->allocated);
-
 }
 
 static void
