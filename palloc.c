@@ -579,7 +579,7 @@ prelease_childs(struct palloc_pool *pool, struct palloc_pool *child_to)
 			SLIST_REMOVE(&pool->free_childs, child, palloc_pool, free_child_link);
 
 		TAILQ_REMOVE(&pool->childs, child, child_link);
-		prelease(child);
+		prelease_after(child, 0);
 
 		if (child == child_to)
 			break;
@@ -676,13 +676,13 @@ palloc_destroy_pool(struct palloc_pool *pool)
 			SLIST_INSERT_HEAD(&parent->free_childs, pool, free_child_link);
 		} else {
 			TAILQ_REMOVE(&parent->childs, pool, child_link);
-			prelease(pool);
+			prelease_after(pool, 0);
 		}
 
 		return;
 	}
 
-	prelease(pool);
+	prelease_after(pool, 0);
 
 	SLIST_REMOVE(&pools, pool, palloc_pool, link);
 	free(pool);
@@ -787,7 +787,7 @@ palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point)
 	if (cut_point == NULL)
 		cut_point = SLIST_FIRST(&pool->cut_list);
 	if (cut_point == NULL)
-		return prelease(pool);
+		return prelease_after(pool, 0);
 
 	SLIST_FOREACH(cp, &pool->cut_list, link) {
 		if (cp == cut_point)
@@ -799,7 +799,7 @@ palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point)
 
 	if (cut_point->chunk == NULL) {
 		assert(SLIST_EMPTY(&pool->cut_list));
-		return prelease(pool);
+		return prelease_after(pool, 0);
 	}
 
 	prelease_childs(pool, &cut_point->fake_pool);
