@@ -116,11 +116,23 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 # ifndef REDZONE
 #  define REDZONE
 # endif
-# define PALLOC_ALIGN(ptr) (void *)TYPEALIGN(8, ptr)
 # define RZMAX (PALLOC_REDZONE + (uintptr_t)PALLOC_ALIGN((void *)1))
+# ifndef PALLOC_ALIGN_DEFAULT
+#  define PALLOC_ALIGN_DEFAULT
+# endif
+#else
+# define RZMAX PALLOC_REDZONE
+#endif
+
+#if !defined(PALLOC_ALIGNMENT) && defined(PALLOC_ALIGN_DEFAULT)
+# define PALLOC_ALIGNMENT	(2 * sizeof(size_t) < __alignof__ (long double) \
+				 ? __alignof__ (long double) : 2 * sizeof(size_t))
+#endif
+
+#ifdef PALLOC_ALIGNMENT
+# define PALLOC_ALIGN(ptr) (void *)TYPEALIGN(PALLOC_ALIGNMENT, ptr)
 #else
 # define PALLOC_ALIGN(ptr) ptr
-# define RZMAX PALLOC_REDZONE
 #endif
 
 #ifdef PALLOC_STAT
@@ -402,7 +414,7 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	chunk->magic = chunk_magic;
 	chunk->data_size = chunk_size;
 	chunk->free = chunk_size;
-	chunk->brk = (void *)chunk + sizeof(struct chunk);
+	chunk->brk = PALLOC_ALIGN((void *)chunk + sizeof(struct chunk));
 	chunk->class = class;
 
 	chunk_poison(chunk);
@@ -523,7 +535,7 @@ release_chunk(struct chunk *chunk)
 	VALGRIND_DESTROY_MEMPOOL(chunk);
 	if (chunk->class->size != almost_unlimited) {
 		chunk->free = chunk->data_size;
-		chunk->brk = (void *)chunk + sizeof(struct chunk);
+		chunk->brk = PALLOC_ALIGN((void *)chunk + sizeof(struct chunk));
 		/* chunk must be removed from palloc_pool->chunks already */
 		TAILQ_INSERT_HEAD(&chunk->class->chunks, chunk, link);
 		chunk_poison(chunk);
