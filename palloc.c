@@ -107,6 +107,10 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 # define nelem(x)     (sizeof((x))/sizeof((x)[0]))
 #endif
 
+#ifndef offsetof
+# define offsetof(type, member) ((size_t) &((type *)0)->member)
+#endif
+
 #ifndef TYPEALIGN
 # define TYPEALIGN(ALIGNVAL,LEN)  \
         (((uintptr_t) (LEN) + ((ALIGNVAL) - 1)) & ~((uintptr_t) ((ALIGNVAL) - 1)))
@@ -118,6 +122,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 # endif
 # define RZMAX (PALLOC_REDZONE + (uintptr_t)PALLOC_ALIGN((void *)1))
 # ifndef PALLOC_ALIGN_DEFAULT
+/* initial chunk->brk must be aligned (for asan) */
 #  define PALLOC_ALIGN_DEFAULT
 # endif
 #else
@@ -130,8 +135,10 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
 #endif
 
 #ifdef PALLOC_ALIGNMENT
+# define PALLOC_ALIGNED __attribute__((aligned(PALLOC_ALIGNMENT)))
 # define PALLOC_ALIGN(ptr) (void *)TYPEALIGN(PALLOC_ALIGNMENT, ptr)
 #else
+# define PALLOC_ALIGNED
 # define PALLOC_ALIGN(ptr) ptr
 #endif
 
@@ -168,10 +175,8 @@ struct chunk {
 	TAILQ_ENTRY(chunk) link; /* chunk is either member of
 				    palloc_pool->chunks or chunk_class->chunks */
 
-#if PALLOC_REDZONE > 0 || (HAVE_VALGRIND_VALGRIND_H && !defined(NVALGRIND))
-	/* initial chunk->brk must be 8-aligned (for asan) */
-	char redzone[PALLOC_REDZONE] __attribute__ ((aligned (8)));
-#endif
+	char redzone[PALLOC_REDZONE];
+	char align[0] PALLOC_ALIGNED;
 };
 
 TAILQ_HEAD(chunk_list_head, chunk);
@@ -236,10 +241,12 @@ static __thread struct chunk_class classes[] = {
 	{ .size = almost_unlimited }
 };
 
-const uint32_t chunk_magic = 0xbb84fcf6;
+static const uint32_t chunk_magic = 0xbb84fcf6;
 #if !defined(NDEBUG) && defined(PALLOC_POISON)
 static const char poison_char = 'P';
 #endif
+
+static const size_t chunk_redzone_size = sizeof(struct chunk) - offsetof(struct chunk, redzone);
 
 static __thread uint64_t release_count = 0;
 
@@ -414,12 +421,14 @@ next_chunk_for(struct palloc_pool *pool, size_t size)
 	chunk->magic = chunk_magic;
 	chunk->data_size = chunk_size;
 	chunk->free = chunk_size;
-	chunk->brk = PALLOC_ALIGN((void *)chunk + sizeof(struct chunk));
+	/* no need to align (see definition of `struct chunk') */
+	chunk->brk = (void *)chunk + sizeof(struct chunk);
+	assert(PALLOC_ALIGN(chunk->brk) == chunk->brk);
 	chunk->class = class;
 
 	chunk_poison(chunk);
-	VALGRIND_MAKE_MEM_NOACCESS(chunk->redzone, sizeof(chunk->redzone));
-	ASAN_POISON_MEMORY_REGION(chunk->redzone, sizeof(chunk->redzone), 0xfa);
+	VALGRIND_MAKE_MEM_NOACCESS(chunk->redzone, chunk_redzone_size);
+	ASAN_POISON_MEMORY_REGION(chunk->redzone, chunk_redzone_size, 0xfa);
 found:
 	assert(chunk != NULL && chunk->magic == chunk_magic);
 	TAILQ_INSERT_HEAD(&pool->chunks, chunk, link);
@@ -535,7 +544,9 @@ release_chunk(struct chunk *chunk)
 	VALGRIND_DESTROY_MEMPOOL(chunk);
 	if (chunk->class->size != almost_unlimited) {
 		chunk->free = chunk->data_size;
-		chunk->brk = PALLOC_ALIGN((void *)chunk + sizeof(struct chunk));
+		/* no need to align (see definition of `struct chunk') */
+		chunk->brk = (void *)chunk + sizeof(struct chunk);
+		assert(PALLOC_ALIGN(chunk->brk) == chunk->brk);
 		/* chunk must be removed from palloc_pool->chunks already */
 		TAILQ_INSERT_HEAD(&chunk->class->chunks, chunk, link);
 		chunk_poison(chunk);
@@ -543,7 +554,7 @@ release_chunk(struct chunk *chunk)
 	} else {
 		assert(chunk->class->chunks_count > 0);
 		chunk->class->chunks_count--;
-		ASAN_UNPOISON_MEMORY_REGION(chunk->redzone, sizeof(chunk->redzone));
+		ASAN_UNPOISON_MEMORY_REGION(chunk->redzone, chunk_redzone_size);
 		ASAN_UNPOISON_MEMORY_REGION(chunk->brk, chunk->free);
 		munmap(chunk, chunk->data_size + sizeof(struct chunk));
 	}
@@ -573,7 +584,7 @@ release_chunks(struct chunk_list_head *chunks)
 				break;
 
 			TAILQ_REMOVE(&class->chunks, chunk, link);
-			ASAN_UNPOISON_MEMORY_REGION(chunk->redzone, sizeof(chunk->redzone));
+			ASAN_UNPOISON_MEMORY_REGION(chunk->redzone, chunk_redzone_size);
 			ASAN_UNPOISON_MEMORY_REGION(chunk->brk, chunk->free);
 			munmap(chunk, class->size + sizeof(struct chunk));
 			class->chunks_count--;
