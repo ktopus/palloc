@@ -246,7 +246,9 @@ static const uint32_t chunk_magic = 0xbb84fcf6;
 static const char poison_char = 'P';
 #endif
 
+#if defined(__SANITIZE_ADDRESS__) || (HAVE_VALGRIND_VALGRIND_H && !defined(NVALGRIND))
 static const size_t chunk_redzone_size = sizeof(struct chunk) - offsetof(struct chunk, redzone);
+#endif
 
 static __thread uint64_t release_count = 0;
 
