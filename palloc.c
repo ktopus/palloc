@@ -440,7 +440,7 @@ found:
 	return chunk;
 }
 
-void * __regparam
+static void * __regparam
 palloc_slow_path(struct palloc_pool *pool, size_t size)
 {
 	struct chunk *chunk;
@@ -478,7 +478,7 @@ palloc_child(struct palloc_pool *parent_pool, struct palloc_pool *pool)
 	return false;
 }
 
-void *
+static void *
 prealloc_slow_path(struct palloc_pool *pool, void *oldptr, size_t oldsize, size_t size)
 {
 	void *ptr = palloc(pool, size);

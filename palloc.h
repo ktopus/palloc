@@ -47,36 +47,75 @@ struct palloc_config {
 	size_t release_after;
 };
 
-void *palloc(struct palloc_pool *pool, size_t size);
-void *prealloc(struct palloc_pool *pool, void *oldptr, size_t oldsize, size_t size);
-void *p0alloc(struct palloc_pool *pool, size_t size);
-void *palloca(struct palloc_pool *pool, size_t size, size_t align);
-void prelease(struct palloc_pool *pool);
-void prelease_after(struct palloc_pool *pool, size_t after);
-struct palloc_pool *palloc_create_pool(struct palloc_config cfg);
-struct palloc_pool *palloc_create_child_pool(struct palloc_pool *pool, struct palloc_config cfg);
-void palloc_destroy_pool(struct palloc_pool *);
-void palloc_unmap_unused(void);
-const char *palloc_name(struct palloc_pool *, const char *);
-void *palloc_ctx(struct palloc_pool *, const void *);
-palloc_nomem_cb_t palloc_nomem_cb(struct palloc_pool *, palloc_nomem_cb_t);
-size_t palloc_size(struct palloc_pool *, size_t *size);
-size_t palloc_allocated(struct palloc_pool *);
-bool palloc_child(struct palloc_pool *parent_pool, struct palloc_pool *pool);
+#ifdef PALLOC_CUSTOM_PREFIX
+# define PALLOC_NAME_CAT(a_, b_) a_ ## b_
+# define PALLOC_NAME_ECAT(a_, b_) PALLOC_NAME_CAT(a_, b_)
+# define PALLOC_NAME(name_) PALLOC_NAME_ECAT(PALLOC_CUSTOM_PREFIX, name_)
+#else
+# define PALLOC_NAME(name_) name_
+#endif
 
-void palloc_register_gc_root(struct palloc_pool *pool,
-			     void *ptr, void (*copy)(struct palloc_pool *, void *));
-void palloc_unregister_gc_root(struct palloc_pool *pool, void *ptr);
-void palloc_gc(struct palloc_pool *pool);
+void *PALLOC_NAME(palloc)(struct palloc_pool *pool, size_t size);
+void *PALLOC_NAME(prealloc)(struct palloc_pool *pool, void *oldptr, size_t oldsize, size_t size);
+void *PALLOC_NAME(p0alloc)(struct palloc_pool *pool, size_t size);
+void *PALLOC_NAME(palloca)(struct palloc_pool *pool, size_t size, size_t align);
+void PALLOC_NAME(prelease)(struct palloc_pool *pool);
+void PALLOC_NAME(prelease_after)(struct palloc_pool *pool, size_t after);
+struct palloc_pool *PALLOC_NAME(palloc_create_pool)(struct palloc_config cfg);
+struct palloc_pool *PALLOC_NAME(palloc_create_child_pool)(struct palloc_pool *pool, struct palloc_config cfg);
+void PALLOC_NAME(palloc_destroy_pool)(struct palloc_pool *);
+void PALLOC_NAME(palloc_unmap_unused)(void);
+const char *PALLOC_NAME(palloc_name)(struct palloc_pool *, const char *);
+void *PALLOC_NAME(palloc_ctx)(struct palloc_pool *, const void *);
+palloc_nomem_cb_t PALLOC_NAME(palloc_nomem_cb)(struct palloc_pool *, palloc_nomem_cb_t);
+size_t PALLOC_NAME(palloc_size)(struct palloc_pool *, size_t *size);
+size_t PALLOC_NAME(palloc_allocated)(struct palloc_pool *);
+bool PALLOC_NAME(palloc_child)(struct palloc_pool *parent_pool, struct palloc_pool *pool);
 
-struct palloc_cut_point *palloc_register_cut_point(struct palloc_pool *pool);
+void PALLOC_NAME(palloc_register_gc_root)(struct palloc_pool *pool,
+					  void *ptr, void (*copy)(struct palloc_pool *, void *));
+void PALLOC_NAME(palloc_unregister_gc_root)(struct palloc_pool *pool, void *ptr);
+void PALLOC_NAME(palloc_gc)(struct palloc_pool *pool);
+
+struct palloc_cut_point *PALLOC_NAME(palloc_register_cut_point)(struct palloc_pool *pool);
 // cut off to the latest cut point
-void palloc_cutoff(struct palloc_pool *pool);
+void PALLOC_NAME(palloc_cutoff)(struct palloc_pool *pool);
 // palloc_cutoff_to(pool, NULL) == palloc_cutoff
-void palloc_cutoff_to(struct palloc_pool *pool, struct palloc_cut_point *cut_point);
+void PALLOC_NAME(palloc_cutoff_to)(struct palloc_pool *pool, struct palloc_cut_point *cut_point);
 
 struct tbuf;
-void palloc_stat_info(struct tbuf *buf);
-bool palloc_owner(struct palloc_pool *pool, void *ptr);
+void PALLOC_NAME(palloc_stat_info)(struct tbuf *buf);
+bool PALLOC_NAME(palloc_owner)(struct palloc_pool *pool, void *ptr);
+
+#ifdef PALLOC_CUSTOM_PREFIX
+# define palloc PALLOC_NAME(palloc)
+# define prealloc PALLOC_NAME(prealloc)
+# define p0alloc PALLOC_NAME(p0alloc)
+# define palloca PALLOC_NAME(palloca)
+# define prelease PALLOC_NAME(prelease)
+# define prelease_after PALLOC_NAME(prelease_after)
+
+# define palloc_create_pool PALLOC_NAME(palloc_create_pool)
+# define palloc_create_child_pool PALLOC_NAME(palloc_create_child_pool)
+# define palloc_destroy_pool PALLOC_NAME(palloc_destroy_pool)
+# define palloc_unmap_unused PALLOC_NAME(palloc_unmap_unused)
+# define palloc_name PALLOC_NAME(palloc_name)
+# define palloc_ctx PALLOC_NAME(palloc_ctx)
+# define palloc_nomem_cb PALLOC_NAME(palloc_nomem_cb)
+# define palloc_size PALLOC_NAME(palloc_size)
+# define palloc_allocated PALLOC_NAME(palloc_allocated)
+# define palloc_child PALLOC_NAME(palloc_child)
+
+# define palloc_register_gc_root PALLOC_NAME(palloc_register_gc_root)
+# define palloc_unregister_gc_root PALLOC_NAME(palloc_unregister_gc_root)
+# define palloc_gc PALLOC_NAME(palloc_gc)
+
+# define palloc_register_cut_point PALLOC_NAME(palloc_register_cut_point)
+# define palloc_cutoff PALLOC_NAME(palloc_cutoff)
+# define palloc_cutoff_to PALLOC_NAME(palloc_cutoff_to)
+
+# define palloc_stat_info PALLOC_NAME(palloc_stat_info)
+# define palloc_owner PALLOC_NAME(palloc_owner)
+#endif // PALLOC_CUSTOM_PREFIX
 
 #endif // _PALLOC_H_
