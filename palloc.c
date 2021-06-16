@@ -656,6 +656,9 @@ palloc_create_pool(struct palloc_config cfg)
 	palloc_init();
 
 	pool = malloc(sizeof(*pool));
+	if (pool == NULL)
+		return NULL;
+
 	palloc_init_pool(pool, cfg);
 	SLIST_INSERT_HEAD(&pools, pool, link);
 
